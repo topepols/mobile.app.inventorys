@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   StyleSheet,
   Text,
@@ -8,6 +8,16 @@ import {
   FlatList,
   Alert,
 } from "react-native";
+import { db, auth } from "./firebaseConfig";
+import {
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  doc,
+  onSnapshot,
+  collection,
+} from "firebase/firestore";
+import { signInWithEmailAndPassword } from "firebase/auth";
 
 export default function App() {
   const [page, setPage] = useState("login");
@@ -18,33 +28,94 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [editId, setEditId] = useState(null);
   const [report, setReport] = useState(null);
+  const [reportLogs, setReportLogs] = useState([]);
 
-  const saveItem = () => {
-    if (!name || !date || !price) return;
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
 
-    if (editId) {
-      setItems(
-        items.map((item) =>
-          item.id === editId ? { ...item, name, date, price } : item
+  // 🔄 Real-time listener for inventory
+  useEffect(() => {
+    const inventoryCol = collection(db, "inventory");
+    const unsubscribe = onSnapshot(inventoryCol, (snapshot) => {
+      const firestoreItems = snapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        ...docSnap.data(),
+      }));
+      setItems(firestoreItems);
+      console.log("📦 Firestore inventory updated:", firestoreItems);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // 🔄 Real-time listener for reports
+  useEffect(() => {
+    const reportsCol = collection(db, "reports");
+    const unsubscribe = onSnapshot(reportsCol, (snapshot) => {
+      const logs = snapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        ...docSnap.data(),
+      }));
+      setReportLogs(
+        logs.sort(
+          (a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0)
         )
       );
-      setEditId(null);
-    } else {
-      const newItem = {
-        id: Date.now().toString(),
-        name,
-        date,
-        price,
-      };
-      setItems([...items, newItem]);
+      console.log("🧾 Firestore reports updated:", logs);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // ➕ Add or Update Item + Log to Firestore
+  const saveItem = async () => {
+    if (!name || !date || !price) {
+      Alert.alert("Error", "Please fill all fields.");
+      return;
     }
 
-    setName("");
-    setDate("");
-    setPrice("");
-    setReport(null);
+    try {
+      if (editId) {
+        const docRef = doc(db, "inventory", editId);
+        await updateDoc(docRef, { name, date, price });
+        Alert.alert("Updated", "Item updated successfully!");
+
+        // 🪵 Log update
+        await addDoc(collection(db, "reports"), {
+          action: "update",
+          name,
+          date,
+          price,
+          user: auth.currentUser?.email || "Unknown",
+          timestamp: new Date(),
+        });
+
+        setEditId(null);
+      } else {
+        await addDoc(collection(db, "inventory"), { name, date, price });
+        Alert.alert("Added", "Item added to inventory!");
+
+        // 🪵 Log add
+        await addDoc(collection(db, "reports"), {
+          action: "add",
+          name,
+          date,
+          price,
+          user: auth.currentUser?.email || "Unknown",
+          timestamp: new Date(),
+        });
+      }
+
+      setName("");
+      setDate("");
+      setPrice("");
+      setReport(null);
+    } catch (error) {
+      console.error("Error saving item:", error);
+      Alert.alert("Error", "Failed to save item.");
+    }
   };
 
+  // ✏️ Edit Item
   const editItem = (item) => {
     setName(item.name);
     setDate(item.date);
@@ -52,43 +123,65 @@ export default function App() {
     setEditId(item.id);
   };
 
-  const deleteItem = (id) => {
+  // 🗑️ Delete Item
+  const deleteItem = async (id) => {
     Alert.alert("Confirm Delete", "Are you sure you want to delete this item?", [
       { text: "Cancel", style: "cancel" },
       {
         text: "Delete",
         style: "destructive",
-        onPress: () => setItems(items.filter((item) => item.id !== id)),
+        onPress: async () => {
+          try {
+            const docRef = doc(db, "inventory", id);
+            await deleteDoc(docRef);
+            Alert.alert("Deleted", "Item removed from inventory.");
+          } catch (error) {
+            console.error("Delete error:", error);
+            Alert.alert("Error", "Failed to delete item.");
+          }
+        },
       },
     ]);
   };
 
-  const deleteAll = () => {
-    Alert.alert("Confirm Delete", "Delete ALL items?", [
-      { text: "Cancel", style: "cancel" },
-      { text: "Delete All", style: "destructive", onPress: () => setItems([]) },
-    ]);
-  };
-
+  // 🧾 Generate Simple Report (local summary)
   const generateReport = () => {
     if (items.length === 0) return;
-
     const totalItems = items.length;
     const totalValue = items.reduce(
       (sum, item) => sum + parseFloat(item.price || 0),
       0
     );
     const latestItem = items[items.length - 1];
-
     setReport({ totalItems, totalValue, latestItem });
   };
 
+  // 🔍 Search Filter
   const filteredItems = items.filter(
     (item) =>
       item.name.toLowerCase().includes(search.toLowerCase()) ||
       item.date.toLowerCase().includes(search.toLowerCase()) ||
       item.price.includes(search)
   );
+
+  // 🔐 Login with Firebase Auth
+  const handleLogin = async () => {
+    if (!email || !password) {
+      Alert.alert("Error", "Please enter email and password.");
+      return;
+    }
+    setLoading(true);
+    try {
+      await signInWithEmailAndPassword(auth, email.trim(), password);
+      Alert.alert("Success", "Login successful!");
+      setPage("home");
+    } catch (error) {
+      console.error("Login error:", error);
+      Alert.alert("Login Failed", "Invalid email or password.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <View style={styles.container}>
@@ -99,17 +192,27 @@ export default function App() {
             Double JDG Inventory Management System
           </Text>
           <View style={styles.loginBox}>
-            <TextInput placeholder="Username" style={styles.input} />
+            <TextInput
+              placeholder="Email"
+              style={styles.input}
+              value={email}
+              onChangeText={setEmail}
+            />
             <TextInput
               placeholder="Password"
               secureTextEntry
               style={styles.input}
+              value={password}
+              onChangeText={setPassword}
             />
             <TouchableOpacity
               style={[styles.btn, styles.loginBtn]}
-              onPress={() => setPage("home")}
+              onPress={handleLogin}
+              disabled={loading}
             >
-              <Text style={styles.btnText}>Login</Text>
+              <Text style={styles.btnText}>
+                {loading ? "Logging in..." : "Login"}
+              </Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -118,7 +221,7 @@ export default function App() {
       {/* MAIN APP */}
       {page !== "login" && (
         <View style={styles.app}>
-          {/* Sidebar (Menu Bar Centered) */}
+          {/* Sidebar */}
           <View style={styles.sidebar}>
             <TouchableOpacity
               style={styles.sideBtn}
@@ -146,7 +249,7 @@ export default function App() {
             </TouchableOpacity>
           </View>
 
-          {/* Content */}
+          {/* Main Content */}
           <View style={styles.main}>
             <Text style={styles.header}>
               Double JDG Inventory Management System
@@ -174,8 +277,6 @@ export default function App() {
             {page === "inventory" && (
               <View style={styles.content}>
                 <Text style={styles.title}>Inventory</Text>
-
-                {/* Inputs */}
                 <View style={styles.formRow}>
                   <TextInput
                     placeholder="Name"
@@ -198,7 +299,6 @@ export default function App() {
                   />
                 </View>
 
-                {/* Buttons */}
                 <View style={styles.btnRow}>
                   <TouchableOpacity style={styles.btn} onPress={saveItem}>
                     <Text style={styles.btnText}>
@@ -210,39 +310,13 @@ export default function App() {
                   </TouchableOpacity>
                 </View>
 
-                {/* Search + Delete All */}
-                <View style={styles.searchRow}>
-                  <TextInput
-                    placeholder="Search"
-                    style={styles.inputSearch}
-                    value={search}
-                    onChangeText={setSearch}
-                  />
-                  <TouchableOpacity
-                    style={[styles.btn, styles.deleteBtn]}
-                    onPress={deleteAll}
-                  >
-                    <Text style={styles.btnText}>Delete All</Text>
-                  </TouchableOpacity>
-                </View>
+                <TextInput
+                  placeholder="Search"
+                  style={styles.inputSearch}
+                  value={search}
+                  onChangeText={setSearch}
+                />
 
-                {/* Report Box */}
-                {report && (
-                  <View style={styles.reportBox}>
-                    <Text style={styles.reportText}>
-                      📊 Total Items: {report.totalItems}
-                    </Text>
-                    <Text style={styles.reportText}>
-                      💰 Total Value: ₱{report.totalValue}
-                    </Text>
-                    <Text style={styles.reportText}>
-                      🆕 Latest Item: {report.latestItem.name} (₱
-                      {report.latestItem.price})
-                    </Text>
-                  </View>
-                )}
-
-                {/* Inventory Table */}
                 <FlatList
                   data={filteredItems}
                   keyExtractor={(item) => item.id}
@@ -275,22 +349,25 @@ export default function App() {
             {page === "reports" && (
               <View style={styles.content}>
                 <Text style={styles.title}>Reports</Text>
-                {report ? (
-                  <View style={styles.reportBox}>
-                    <Text style={styles.reportText}>
-                      📊 Total Items: {report.totalItems}
-                    </Text>
-                    <Text style={styles.reportText}>
-                      💰 Total Value: ₱{report.totalValue}
-                    </Text>
-                    <Text style={styles.reportText}>
-                      🆕 Latest Item: {report.latestItem.name} (₱
-                      {report.latestItem.price})
-                    </Text>
-                  </View>
-                ) : (
-                  <Text>No report generated yet.</Text>
-                )}
+                <FlatList
+                  data={reportLogs}
+                  keyExtractor={(item) => item.id}
+                  renderItem={({ item }) => (
+                    <View style={styles.row}>
+                      <Text style={styles.rowText}>
+                        {item.action.toUpperCase()} — {item.name} (₱{item.price})
+                      </Text>
+                      <Text style={styles.rowText}>
+                        By: {item.user || "Unknown"} •{" "}
+                        {item.timestamp?.seconds
+                          ? new Date(
+                              item.timestamp.seconds * 1000
+                            ).toLocaleString()
+                          : "N/A"}
+                      </Text>
+                    </View>
+                  )}
+                />
               </View>
             )}
           </View>
@@ -300,6 +377,7 @@ export default function App() {
   );
 }
 
+// ✅ Styles (unchanged)
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#b6ffb6" },
   header: {
@@ -390,45 +468,27 @@ const styles = StyleSheet.create({
     marginHorizontal: 5,
   },
   btnText: { color: "#fff", fontWeight: "bold" },
-  searchRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 15,
-  },
   inputSearch: {
-    flex: 1,
     borderWidth: 1,
     borderColor: "#ccc",
     borderRadius: 8,
     padding: 10,
     backgroundColor: "#fff",
-    marginRight: 10,
+    marginBottom: 10,
   },
   row: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: "#aaa",
-    backgroundColor: "#f9f9f9",
-    borderRadius: 5,
-    marginBottom: 5,
-  },
-  rowText: { fontSize: 14, fontWeight: "500" },
-  rowBtns: { flexDirection: "row" },
-  editBtn: { backgroundColor: "#007bff" },
-  deleteBtn: { backgroundColor: "#e53935" },
-  reportBox: {
     backgroundColor: "#fff",
     borderRadius: 8,
-    padding: 15,
-    marginBottom: 15,
+    padding: 10,
+    marginBottom: 8,
     shadowColor: "#000",
     shadowOpacity: 0.1,
-    shadowOffset: { width: 1, height: 2 },
-    shadowRadius: 4,
+    shadowOffset: { width: 1, height: 1 },
+    shadowRadius: 3,
     elevation: 2,
   },
-  reportText: { fontSize: 15, marginBottom: 5, fontWeight: "500" },
+  rowText: { fontSize: 14 },
+  rowBtns: { flexDirection: "row", justifyContent: "flex-end" },
+  editBtn: { backgroundColor: "#007bff" },
+  deleteBtn: { backgroundColor: "#e53935" },
 });
