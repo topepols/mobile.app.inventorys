@@ -8,6 +8,7 @@ import {
   FlatList,
   Alert,
 } from "react-native";
+import { CameraView, useCameraPermissions } from "expo-camera";
 import { db, auth } from "./firebaseConfig";
 import {
   addDoc,
@@ -33,6 +34,16 @@ export default function App() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // 📸 Camera permissions
+  const [permission, requestPermission] = useCameraPermissions();
+  const [scanned, setScanned] = useState(false);
+
+  useEffect(() => {
+    if (!permission) {
+      requestPermission();
+    }
+  }, [permission]);
 
   // 🔄 Real-time listener for inventory
   useEffect(() => {
@@ -79,7 +90,6 @@ export default function App() {
         await updateDoc(docRef, { name, date, price });
         Alert.alert("Updated", "Item updated successfully!");
 
-        // 🪵 Log update
         await addDoc(collection(db, "reports"), {
           action: "update",
           name,
@@ -94,7 +104,6 @@ export default function App() {
         await addDoc(collection(db, "inventory"), { name, date, price });
         Alert.alert("Added", "Item added to inventory!");
 
-        // 🪵 Log add
         await addDoc(collection(db, "reports"), {
           action: "add",
           name,
@@ -308,6 +317,12 @@ export default function App() {
                   <TouchableOpacity style={styles.btn} onPress={generateReport}>
                     <Text style={styles.btnText}>Generate</Text>
                   </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.btn, { backgroundColor: "#007bff" }]}
+                    onPress={() => setPage("camera")}
+                  >
+                    <Text style={styles.btnText}>Camera</Text>
+                  </TouchableOpacity>
                 </View>
 
                 <TextInput
@@ -370,6 +385,81 @@ export default function App() {
                 />
               </View>
             )}
+
+            {/* ✅ Camera Page with Safe Permission Check */}
+{page === "camera" && (
+  <View style={styles.content}>
+    <Text style={styles.title}>Camera (QR Scanner)</Text>
+
+    {/* Step 1: Handle permission */}
+    {!permission ? (
+      <Text>Checking camera permission...</Text>
+    ) : !permission.granted ? (
+      <View style={{ alignItems: "center", marginTop: 50 }}>
+        <Text style={{ marginBottom: 15 }}>
+          Camera permission is required to scan QR codes.
+        </Text>
+        <TouchableOpacity
+          style={[styles.btn, { backgroundColor: "#007bff" }]}
+          onPress={requestPermission}
+        >
+          <Text style={styles.btnText}>Grant Permission</Text>
+        </TouchableOpacity>
+      </View>
+    ) : (
+      <>
+        {/* Step 2: Show Camera once permission is granted */}
+        <CameraView
+          style={{ flex: 1, width: "100%" }}
+          facing="back"
+          barcodeScannerSettings={{
+            barcodeTypes: ["qr"],
+          }}
+          onBarcodeScanned={
+            scanned
+              ? undefined
+              : (result) => {
+                  if (result && result.data) {
+                    setScanned(true);
+                    Alert.alert("QR Detected", `Data: ${result.data}`);
+                  }
+                }
+          }
+        />
+
+        {/* Step 3: Buttons */}
+        <View
+          style={{
+            flexDirection: "row",
+            justifyContent: "center",
+            marginTop: 10,
+          }}
+        >
+          <TouchableOpacity
+            style={[
+              styles.btn,
+              { backgroundColor: "#007bff", marginHorizontal: 5 },
+            ]}
+            onPress={() => setScanned(false)}
+          >
+            <Text style={styles.btnText}>Scan Again</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              styles.btn,
+              { backgroundColor: "#c97c1b", marginHorizontal: 5 },
+            ]}
+            onPress={() => setPage("inventory")}
+          >
+            <Text style={styles.btnText}>Back to Inventory</Text>
+          </TouchableOpacity>
+        </View>
+      </>
+    )}
+  </View>
+)}
+
           </View>
         </View>
       )}
@@ -377,7 +467,7 @@ export default function App() {
   );
 }
 
-// ✅ Styles (unchanged)
+// ✅ Styles
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#b6ffb6" },
   header: {
